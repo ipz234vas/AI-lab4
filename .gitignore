@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.idea/
+.vscode/
+.DS_Store
+# Locally generated experiment outputs:
+experiments/results/evaluation_*.json
+experiments/results/evaluation_*.csv
+experiments/results/reply_ab_*.json
+experiments/results/reply_ab_*.csv
+experiments/results/recomputed/
