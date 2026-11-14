@@ -6,7 +6,7 @@
 
 ```text
 lab4/
-├── local_models_demo.ipynb       # оригінальний ноутбук лекції
+├── local_models_demo.ipynb       # демо-ноутбук, відповіді та звіт
 ├── bench.py                       # бенчмарк лекції, без змін
 ├── bench_results.csv              # всі фактичні before/after/контрольні вимірювання
 ├── app/
@@ -25,7 +25,8 @@ lab4/
 │   ├── compare_replies.py        # парне A/B для чернеток
 │   ├── tests/                     # автономні перевірки тестових скриптів
 │   └── README.md
-└── demo/README.md                # інструкція щодо відеодемонстрації
+└── demo/
+    └── app-demo.jpg              # скриншот роботи SmartNotify
 ```
 
 ## Запуск застосунку
