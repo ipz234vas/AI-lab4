@@ -2,12 +2,19 @@ import json
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch, MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import server
 from server import (AppError, BASE_MODEL, CONTEXTS, alias_for, connect,
                     context_model, installed_models, parse_selection, read_settings)
+
+def completion(content, prompt_tokens=None, completion_tokens=None):
+    usage = (SimpleNamespace(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
+             if prompt_tokens is not None or completion_tokens is not None else None)
+    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))], usage=usage)
+
 
 class ServerTests(unittest.TestCase):
     def setUp(self):
@@ -73,19 +80,31 @@ class ServerTests(unittest.TestCase):
             with self.subTest(data=data), self.assertRaises(AppError):
                 read_settings({'model':BASE_MODEL,**data})
 
+    @patch('server.secrets.randbelow', side_effect=[123, 456])
+    def test_seed_random_and_fixed(self, random_seed):
+        with server._lock:
+            server._connections[(BASE_MODEL,4096)]=alias_for(BASE_MODEL,4096)
+        for value, expected in [(None,123), ('',456), (0,0), (1,1), (2147483647,2147483647)]:
+            config, settings=read_settings({'model':BASE_MODEL,'seed':value})
+            self.assertEqual(config.seed,expected)
+            self.assertEqual(settings['seed'],expected)
+        self.assertEqual(random_seed.call_count,2)
+        for value in [-1, 2147483648, True, 1.5, '42', [], {}]:
+            with self.subTest(value=value), self.assertRaises(AppError):
+                read_settings({'model':BASE_MODEL,'seed':value})
+
     @patch('server.make_client')
     @patch('server.context_model')
     def test_connect_warms_via_openai_and_registers_after_success(self, ctx, make):
         ctx.return_value='warm:ctx4096'
-        client=Mock();make.return_value=client
-        client.create.return_value={'choices':[{'message':{'content':'READY'}}],
-                                    'usage':{'prompt_tokens':11,'completion_tokens':1}}
+        client=MagicMock();client.__enter__.return_value=client;make.return_value=client
+        client.chat.completions.create.return_value=completion('READY',11,1)
         info=connect({'model':'qwen3:4b','num_ctx':4096})
         self.assertTrue(info['connected'])
         self.assertEqual(info['model'],'qwen3:4b')
         self.assertEqual(info['warmup']['completion_tokens'],1)
         self.assertIn(('qwen3:4b',4096),server._connections)
-        body=client.create.call_args.args[0]
+        body=client.chat.completions.create.call_args.kwargs
         self.assertEqual(body['model'],'warm:ctx4096')
         self.assertEqual(body['reasoning_effort'],'none')
         self.assertEqual(body['max_tokens'],12)
@@ -94,7 +113,7 @@ class ServerTests(unittest.TestCase):
     @patch('server.make_client')
     @patch('server.context_model',return_value='test:ctx2048')
     def test_failed_warmup_does_not_register(self, ctx, make):
-        make.return_value.create.return_value={'choices':[{'message':{'content':''}}]}
+        make.return_value.__enter__.return_value.chat.completions.create.return_value=completion('')
         with self.assertRaises(AppError):connect({'model':BASE_MODEL,'num_ctx':2048})
         self.assertNotIn((BASE_MODEL,2048),server._connections)
 

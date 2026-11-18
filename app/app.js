@@ -12,7 +12,8 @@ function selection() {
 }
 function settings() {
   return {...selection(), classifier_temperature:Number($('classifierTemperature').value),
-    reply_temperature:Number($('replyTemperature').value), max_tokens:Number($('maxTokens').value)};
+    reply_temperature:Number($('replyTemperature').value), max_tokens:Number($('maxTokens').value),
+    seed:$('seed').value.trim()==='' ? null : Number($('seed').value)};
 }
 function connectionKey({model,num_ctx}) {return JSON.stringify([model,num_ctx]);}
 function isConnected() {const sel=selection();return !!sel.model && knownConnections.has(connectionKey(sel));}
@@ -46,7 +47,7 @@ function updateControls() {
   // Don't disable settings: changing them is harmless to already displayed outputs.
   // During an active request we lock them so that the request uses a coherent snapshot.
   for(const id of ['sender','message','autoReply','classifierTemperature',
-                    'replyTemperature','context','maxTokens','model','refreshModels'])
+                    'replyTemperature','context','maxTokens','seed','model','refreshModels'])
     $(id).disabled=busy;
   updateConnectionStatus();
 }
@@ -56,6 +57,12 @@ async function request(route,data) {
   let result;try{result=await resp.json();}catch{throw new Error('Сервер повернув некоректну відповідь.');}
   if(!resp.ok)throw new Error(result.error || 'Помилка сервера.');
   return result;
+}
+function validSeed() {
+  const value=settings().seed;
+  if (!$('seed').validity?.badInput && (value===null || (Number.isInteger(value) && value>=0 && value<=2147483647))) return true;
+  feedback('Seed має бути цілим числом від 0 до 2147483647 або порожнім.','error');
+  return false;
 }
 function displayMetrics() {
   if (!current)return;
@@ -99,6 +106,7 @@ async function connectModel() {
 }
 async function createReply() {
   if(!current || busy && !$('autoReply').checked)return;
+  if(!validSeed())return;
   if(!sameInput()) {feedback('Повідомлення змінилось. Натисни «Аналізувати» для нього.','error');return;}
   if(!isConnected()){feedback('Спочатку підключи вибрану модель та контекст.','error');return;}
   const alreadyBusy=busy;
@@ -108,7 +116,7 @@ async function createReply() {
   try {
     const data=await request('reply',{
       ...current.input,model:params.model,num_ctx:params.num_ctx,max_tokens:params.max_tokens,
-      temperature:params.reply_temperature,urgency_level:current.classifier.result.urgency_level
+      temperature:params.reply_temperature,seed:params.seed,urgency_level:current.classifier.result.urgency_level
     });
     current.reply=data;
     $('reply').value=data.result.suggested_reply??'';
@@ -119,7 +127,7 @@ async function createReply() {
   finally{if(!alreadyBusy)setBusy(false);}
 }
 async function analyze() {
-  if(busy)return;
+  if(busy || !validSeed())return;
   if(!isConnected()){feedback('Спочатку натисни «Підключити» для вибраної моделі та контексту.','error');return;}
   const sender=$('sender').value.trim(),message=$('message').value.trim();
   if(!message){feedback('Введи повідомлення.','error');return;}
@@ -128,7 +136,7 @@ async function analyze() {
   try {
     const input={sender,message};
     const cls=await request('classify',{...input,model:params.model,num_ctx:params.num_ctx,
-      max_tokens:params.max_tokens,temperature:params.classifier_temperature});
+      max_tokens:params.max_tokens,temperature:params.classifier_temperature,seed:params.seed});
     // Replace the old output ONLY AFTER successful new classification.
     current={input,settings_at_classification:params,classifier:cls,reply:null};
     const level=cls.result.urgency_level;
@@ -143,7 +151,7 @@ async function analyze() {
   }catch(e){feedback(e.message,'error');}
   finally{setBusy(false);}
 }
-for(const id of ['classifierTemperature','replyTemperature','context','maxTokens']){
+for(const id of ['classifierTemperature','replyTemperature','context','maxTokens','seed']){
   $(id).addEventListener('input',()=>{updateValues();updateControls();displayMetrics();});
   $(id).addEventListener('change',()=>{updateValues();updateControls();displayMetrics();});
 }

@@ -17,7 +17,7 @@ class Element {
   replaceChildren(){this.children=[];this._value='';}
   appendChild(el){this.children.push(el);if(this.children.length===1)this._value=el.value;}
 }
-const ids=['serverStatus','model','refreshModels','connectBtn','sender','message','classifyBtn','replyBtn','autoReply','classifierTemperature','replyTemperature','context','maxTokens','classifierTemperatureValue','replyTemperatureValue','contextValue','maxTokensValue','feedback','result','urgency','reason','reply','metricsText','copyBtn'];
+const ids=['serverStatus','model','refreshModels','connectBtn','sender','message','classifyBtn','replyBtn','autoReply','classifierTemperature','replyTemperature','context','maxTokens','seed','classifierTemperatureValue','replyTemperatureValue','contextValue','maxTokensValue','feedback','result','urgency','reason','reply','metricsText','copyBtn'];
 const elements=Object.fromEntries(ids.map(id=>[id,new Element(id)]));
 for(const [id,value] of Object.entries({context:'4096',maxTokens:'220',classifierTemperature:'0',replyTemperature:'0',sender:'Колега',message:'Привіт'}))elements[id].value=value;
 let calls=[];
@@ -47,7 +47,11 @@ async function run(){
   assert.equal(elements.urgency.textContent,'Висока');
   await elements.replyBtn.fire('click');
   assert.equal(elements.reply.value,'Чернетка: 0');
+  assert.equal(calls.filter(c=>c.url==='/api/classify').at(-1).body.seed,null);
+  assert.equal(calls.filter(c=>c.url==='/api/reply').at(-1).body.seed,null);
   const originalReply=elements.reply.value;
+  elements.seed.value='0';await elements.seed.fire('input');
+  assert.equal(elements.reply.value,originalReply);
   const origClassCalls=calls.filter(c=>c.url==='/api/classify').length;
   // BOTH temperatures and max tokens should leave existing output intact.
   elements.replyTemperature.value='0.5';await elements.replyTemperature.fire('input');
@@ -61,6 +65,13 @@ async function run(){
   assert.equal(calls.filter(c=>c.url==='/api/classify').length,origClassCalls,
     'reply must not rerun classification');
   assert.equal(calls.filter(c=>c.url==='/api/reply').at(-1).body.max_tokens,128);
+  assert.equal(calls.filter(c=>c.url==='/api/reply').at(-1).body.seed,0);
+  elements.seed.value='123';await elements.seed.fire('input');
+  const oldText=elements.reply.value;
+  elements.seed.value='-1';await elements.seed.fire('input');
+  const count=calls.length;await elements.replyBtn.fire('click');
+  assert.equal(calls.length,count);assert.equal(elements.reply.value,oldText);
+  elements.seed.value='123';await elements.seed.fire('input');
   // Switching model keeps results visible and requires warming new model.
   elements.model.value='qwen3:4b-q4_K_M';await elements.model.fire('change');
   assert.equal(elements.reply.value,'Чернетка: 0.5');
@@ -95,6 +106,8 @@ async function run(){
   await elements.classifyBtn.fire('click');
   assert.equal(calls.filter(c=>c.url==='/api/reply').length,oldReplies+1);
   assert.equal(elements.reply.value,'Чернетка: 0.5');
+  assert.equal(calls.filter(c=>c.url==='/api/classify').at(-1).body.seed,123);
+  assert.equal(calls.filter(c=>c.url==='/api/reply').at(-1).body.seed,123);
   console.log('UI regression tests passed: temperatures, model switch, context, warmup, result persistence, auto reply.');
 }
 run().catch(e=>{console.error(e);process.exitCode=1;});

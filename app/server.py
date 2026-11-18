@@ -1,6 +1,6 @@
 """SmartNotify: simple local HTML frontend and Ollama OpenAI-compatible API.
 
-Start: python app/server.py  (Python 3.10+, no pip packages).
+Start: python app/server.py  (Python 3.10+, pip install openai).
 Ollama native endpoints: /api/tags for discovery and /api/create for num_ctx aliases.
 ALL LLM generations, including warmup, use /v1/chat/completions.
 """
@@ -14,12 +14,13 @@ import math
 import os
 from pathlib import Path
 import re
+import secrets
 from threading import Lock
 from time import perf_counter
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from smartnotify_core import Config, SmartNotifyError, classify, generate_reply, make_client
+from smartnotify_core import Config, SmartNotifyError, classify, generate_reply, make_client, complete
 
 ROOT = Path(__file__).resolve().parent
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
@@ -117,19 +118,17 @@ def context_model(model: str, ctx: int) -> str:
 def connect(data: dict) -> dict:
     model, ctx = parse_selection(data)
     alias = context_model(model, ctx)
-    client = make_client(Config(model=alias, base_url=OLLAMA_URL + "/v1", timeout_seconds=180))
+    config = Config(model=alias, base_url=OLLAMA_URL + "/v1", timeout_seconds=180)
     t0 = perf_counter()
     try:
-        response = client.create({
-            "model": alias,
-            "messages": [{"role": "user", "content": "Reply with the single word READY."}],
-            "temperature": 0, "seed": 1,
-            "max_tokens": 12, "reasoning_effort": "none", "stream": False,
-        })
-        choices = response.get("choices")
-        if not isinstance(choices, list) or not choices:
-            raise SmartNotifyError("Прогрів моделі не повернув відповідь.")
-        answer = choices[0].get("message", {}).get("content")
+        with make_client(config) as client:
+            response = complete(client,
+                model=alias,
+                messages=[{"role": "user", "content": "Reply with the single word READY."}],
+                temperature=0, seed=secrets.randbelow(2**31),
+                max_tokens=12, reasoning_effort="none", stream=False,
+            )
+        answer = response.choices[0].message.content if response.choices else None
         if not isinstance(answer, str) or not answer.strip():
             raise SmartNotifyError("Модель повернула порожню відповідь на прогрів.")
     except SmartNotifyError as exc:
@@ -137,11 +136,20 @@ def connect(data: dict) -> dict:
     elapsed = round(perf_counter() - t0, 3)
     with _lock:
         _connections[(model, ctx)] = alias
-    usage = response.get("usage") or {}
+    usage = response.usage
     return {"connected": True, "model": model, "num_ctx": ctx, "alias": alias,
             "warmup": {"elapsed_s": elapsed,
-                       "prompt_tokens": usage.get("prompt_tokens"),
-                       "completion_tokens": usage.get("completion_tokens")}}
+                       "prompt_tokens": usage.prompt_tokens if usage else None,
+                       "completion_tokens": usage.completion_tokens if usage else None}}
+
+
+def parse_seed(value) -> int:
+    # A blank field means a newly sampled seed for each generation.
+    if value is None or value == "":
+        return secrets.randbelow(2**31)
+    if type(value) is not int or not 0 <= value < 2**31:
+        raise AppError("Seed має бути цілим числом від 0 до 2147483647 або порожнім.", 400)
+    return value
 
 
 def read_settings(data: dict) -> tuple[Config, dict]:
@@ -157,11 +165,12 @@ def read_settings(data: dict) -> tuple[Config, dict]:
         alias = _connections.get((model, num_ctx))
     if alias is None:
         raise AppError("Спочатку натисни «Підключити» для вибраної моделі та контексту.", 409)
+    seed = parse_seed(data.get("seed"))
     config = Config(model=alias, base_url=OLLAMA_URL + "/v1", temperature=temp,
-                    seed=1, max_tokens=max_tokens, target_num_ctx=num_ctx,
+                    seed=seed, max_tokens=max_tokens, target_num_ctx=num_ctx,
                     timeout_seconds=180)
     return config, {"model": model, "alias": alias, "temperature": temp,
-                    "num_ctx": num_ctx, "max_tokens": max_tokens, "seed": 1}
+                    "num_ctx": num_ctx, "max_tokens": max_tokens, "seed": seed}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -231,14 +240,14 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(sender, str) or not isinstance(message, str) or len(sender) > 120 or not 0 < len(message.strip()) <= 4000:
                 raise AppError("Вкажи відправника та повідомлення (до 4000 символів).", 400)
             config, settings = read_settings(data)
-            client = make_client(config)
-            if self.path == "/api/classify":
-                result, metrics = classify(client, config, sender, message)
-            else:
-                level = data.get("urgency_level")
-                if not isinstance(level, str):
-                    raise AppError("Спочатку виконай класифікацію.", 400)
-                result, metrics = generate_reply(client, config, sender, message, level)
+            with make_client(config) as client:
+                if self.path == "/api/classify":
+                    result, metrics = classify(client, config, sender, message)
+                else:
+                    level = data.get("urgency_level")
+                    if not isinstance(level, str):
+                        raise AppError("Спочатку виконай класифікацію.", 400)
+                    result, metrics = generate_reply(client, config, sender, message, level)
             self.send_json({"result": result, "metrics": metrics, "settings": settings})
         except AppError as exc:
             self.send_json({"error": str(exc)}, exc.status)
